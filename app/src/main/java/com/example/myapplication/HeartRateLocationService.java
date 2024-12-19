@@ -31,10 +31,14 @@ import com.google.android.gms.location.LocationServices;
 
 import org.eclipse.paho.android.service.MqttAndroidClient;
 import org.eclipse.paho.client.mqttv3.IMqttActionListener;
+import org.eclipse.paho.client.mqttv3.IMqttDeliveryToken;
 import org.eclipse.paho.client.mqttv3.IMqttToken;
+import org.eclipse.paho.client.mqttv3.MqttCallback;
 import org.eclipse.paho.client.mqttv3.MqttClient;
 import org.eclipse.paho.client.mqttv3.MqttException;
 import org.eclipse.paho.client.mqttv3.MqttMessage;
+import org.json.JSONException;
+import org.json.JSONObject;
 
 public class HeartRateLocationService extends Service {
 
@@ -42,22 +46,31 @@ public class HeartRateLocationService extends Service {
     private Sensor heartRateSensor;
     private FusedLocationProviderClient fusedLocationClient;
     private LocationCallback locationCallback;
-    private String smartwatch = "ocid";
-
+    private String deviceId; // Menyimpan deviceId yang dinamis
+    private String mqttPublishTopic;
+    private String mqttSubscribeTopic;
     private MqttAndroidClient mqttClient;
+    // 206.189.40.4
     private static final String MQTT_SERVER_URI = "tcp://206.189.40.4:1883"; // Ganti dengan IP server Anda
-    private static final String MQTT_TOPIC = "health/heart_rate_location";
+//    private static final String MQTT_TOPIC = "health/heart_rate_location";
 
     private float currentHeartRate = 0;
     private double currentLatitude = 0.0, currentLongitude = 0.0;
 
     private final Handler handler = new Handler();
     private long lastPublishTime = 0;
+    private boolean isEmergency = false;
 
     @Override
     public void onCreate() {
         super.onCreate();
         Log.d("HeartRateService", "Service started");
+
+        deviceId = retrieveDeviceId();
+
+        // Tentukan topik MQTT
+        mqttPublishTopic = "safetrip/sw/" + deviceId;
+        mqttSubscribeTopic = "safetrip/call/" + deviceId;
 
         // Initialize MQTT Client
         initializeMqttClient();
@@ -93,10 +106,34 @@ public class HeartRateLocationService extends Service {
                     updateMqttStatus("Connected");
                     // Subscribe to a topic (optional, for testing)
                     try {
-                        mqttClient.subscribe(MQTT_TOPIC, 1);
+                        mqttClient.subscribe(mqttSubscribeTopic, 1);
+                        Log.d("MQTT", "Subscribed to topic: " + mqttSubscribeTopic);
                     } catch (MqttException e) {
                         Log.e("MQTT", "Failed to subscribe", e);
                     }
+
+                    // Set callback untuk menerima pesan
+                    mqttClient.setCallback(new MqttCallback() {
+                        @Override
+                        public void connectionLost(Throwable cause) {
+                            Log.e("MQTT", "Connection lost", cause);
+                        }
+
+                        @Override
+                        public void messageArrived(String topic, MqttMessage message) throws Exception {
+                            if (topic.equals(mqttSubscribeTopic)) { // Gunakan equals dengan benar
+                                String receivedMessage = new String(message.getPayload());
+                                Log.d("MQTT", "Message received: " + receivedMessage);
+                                handleIncomingMessage(receivedMessage);
+                            }
+                        }
+
+                        @Override
+                        public void deliveryComplete(IMqttDeliveryToken token) {
+                            Log.d("MQTT", "Delivery complete");
+                        }
+                    });
+
                 }
 
                 @Override
@@ -131,20 +168,20 @@ public class HeartRateLocationService extends Service {
         long currentTime = System.currentTimeMillis();
         if (currentTime - lastPublishTime >= 1000) { // Kirim setiap 1 detik
             lastPublishTime = currentTime;
-            String deviceId = retrieveDeviceId();
             if (mqttClient != null && mqttClient.isConnected()) {
-                try { // "heart_rate": %.1f,
+                try {
                     String payload = String.format(
-                            "{\"device\": \"%s\", \"latitude\": %.6f, \"longitude\": %.6f, \"timestamp\": \"%s\"}",
+                            "{\"device\": \"%s\", \"heart_rate\": %.1f, \"latitude\": %.6f, \"longitude\": %.6f, \"emergency\": %d, \"timestamp\": \"%s\"}",
                             deviceId, // Gunakan ID unik perangkat, contoh: Build.SERIAL
-                            // currentHeartRate,
+                            currentHeartRate,
                             currentLatitude,
                             currentLongitude,
+                            isEmergency ? 1 : 0,
                             new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new java.util.Date())
                     );
                     MqttMessage message = new MqttMessage(payload.getBytes());
                     message.setQos(1);
-                    mqttClient.publish(MQTT_TOPIC, message);
+                    mqttClient.publish(mqttPublishTopic, message);
                     Log.d("MQTT", "Data published: " + payload);
                 } catch (MqttException e) {
                     Log.e("MQTT", "Failed to publish data", e);
@@ -219,6 +256,32 @@ public class HeartRateLocationService extends Service {
         }
     }
 
+    // Fungsi untuk menangani pesan masuk dari topik safetrip/call/{deviceId}
+    private void handleIncomingMessage(String message) {
+        try {
+            JSONObject jsonObject = new JSONObject(message);
+            String notificationMessage = jsonObject.optString("message", "No message");
+            sendNotification(notificationMessage);
+        } catch (JSONException e) {
+            Log.e("MQTT", "Invalid message format: " + message, e);
+        }
+    }
+
+    // Fungsi untuk menampilkan notifikasi
+    private void sendNotification(String message) {
+        NotificationCompat.Builder builder = new NotificationCompat.Builder(this, "HeartRateServiceChannel")
+                .setContentTitle("Notification from MQTT")
+                .setContentText(message)
+                .setSmallIcon(R.drawable.ic_launcher_foreground)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setAutoCancel(true);
+
+        NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        if (manager != null) {
+            manager.notify(1, builder.build());
+        }
+    }
+
     private Notification getForegroundNotification() {
         return new NotificationCompat.Builder(this, "HeartRateServiceChannel")
                 .setContentTitle("Heart Rate and Location Monitoring")
@@ -243,7 +306,10 @@ public class HeartRateLocationService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        // Logic untuk service Anda
+        if (intent != null && intent.hasExtra("emergency")) {
+            isEmergency = intent.getBooleanExtra("emergency", false);
+            Log.d("HeartRateService", "Emergency status updated: " + isEmergency);
+        }
         return START_STICKY;
     }
 

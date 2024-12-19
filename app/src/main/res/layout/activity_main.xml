@@ -4,15 +4,15 @@
     android:layout_height="match_parent"
     android:padding="16dp">
 
-<!--    <TextView-->
-<!--        android:id="@+id/heartRateTextView"-->
-<!--        android:layout_width="wrap_content"-->
-<!--        android:layout_height="wrap_content"-->
-<!--        android:text="Heart Rate: &#45;&#45; BPM"-->
-<!--        android:textSize="24sp"-->
-<!--        android:layout_centerHorizontal="true"-->
-<!--        android:layout_marginTop="50dp"-->
-<!--        android:textColor="@android:color/black" />-->
+    <TextView
+        android:id="@+id/heartRateTextView"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Heart Rate: -- BPM"
+        android:textSize="24sp"
+        android:layout_centerHorizontal="true"
+        android:layout_marginTop="50dp"
+        android:textColor="@android:color/black" />
 
     <TextView
         android:id="@+id/mqttStatusTextView"
@@ -30,10 +30,23 @@
         android:id="@+id/locationTextView"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
+        android:layout_below="@id/heartRateTextView"
         android:text="Location: \nLat: --\nLng: --"
         android:textSize="20sp"
         android:layout_centerHorizontal="true"
         android:layout_marginTop="30dp"
         android:textColor="@android:color/black" />
+
+    <Button
+        android:id="@+id/emergencyButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_below="@id/mqttStatusTextView"
+        android:layout_centerHorizontal="true"
+        android:layout_marginTop="30dp"
+        android:padding="10dp"
+        android:text="Emergency"
+        android:textSize="20sp"
+        android:backgroundTint="@android:color/holo_orange_dark"
+        android:textColor="@android:color/white" />
 </RelativeLayout>
-<!--    android:layout_below="@id/heartRateTextView"-->
