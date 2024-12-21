@@ -19,6 +19,7 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.provider.Settings;
 import android.util.Log;
+import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.core.app.NotificationCompat;
@@ -40,6 +41,8 @@ import org.eclipse.paho.client.mqttv3.MqttMessage;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.util.List;
+
 public class HeartRateLocationService extends Service {
 
     private SensorManager sensorManager;
@@ -51,7 +54,7 @@ public class HeartRateLocationService extends Service {
     private String mqttSubscribeTopic;
     private MqttAndroidClient mqttClient;
     // 206.189.40.4
-    private static final String MQTT_SERVER_URI = "tcp://206.189.40.4:1883"; // Ganti dengan IP server Anda
+    private static final String MQTT_SERVER_URI = "tcp://192.168.1.143:1883"; // Ganti dengan IP server Anda
 //    private static final String MQTT_TOPIC = "health/heart_rate_location";
 
     private float currentHeartRate = 0;
@@ -69,8 +72,8 @@ public class HeartRateLocationService extends Service {
         deviceId = retrieveDeviceId();
 
         // Tentukan topik MQTT
-        mqttPublishTopic = "safetrip/sw/" + deviceId;
-        mqttSubscribeTopic = "safetrip/call/" + deviceId;
+        mqttPublishTopic = "sundalink/sw/" + deviceId;
+        mqttSubscribeTopic = "sundalink/msg/" + deviceId;
 
         // Initialize MQTT Client
         initializeMqttClient();
@@ -211,22 +214,40 @@ public class HeartRateLocationService extends Service {
 
 
     private void startHeartRateMonitoring() {
-        if (heartRateSensor != null) {
-            SensorEventListener heartRateListener = new SensorEventListener() {
-                @Override
-                public void onSensorChanged(SensorEvent event) {
-                    if (event.sensor.getType() == Sensor.TYPE_HEART_RATE) {
-                        currentHeartRate = event.values[0];
-                        handler.post(() -> publishDataToMqtt()); // Trigger MQTT publish
-                    }
-                }
+        SensorManager sensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
 
-                @Override
-                public void onAccuracyChanged(Sensor sensor, int accuracy) {
-                    // Optional: Handle accuracy changes
+        if (sensorManager != null) {
+            // Cari sensor dengan ID 65599
+            List<Sensor> sensorList = sensorManager.getSensorList(Sensor.TYPE_ALL);
+            Sensor heartRateSensor = null;
+
+            for (Sensor sensor : sensorList) {
+                if (sensor.getType() == 65599) { // Gunakan ID sensor 65599
+                    heartRateSensor = sensor;
+                    break;
                 }
-            };
-            sensorManager.registerListener(heartRateListener, heartRateSensor, SensorManager.SENSOR_DELAY_NORMAL);
+            }
+
+            if (heartRateSensor != null) {
+                SensorEventListener heartRateListener = new SensorEventListener() {
+                    @Override
+                    public void onSensorChanged(SensorEvent event) {
+                        if (event.sensor.getType() == 65599) {
+                            currentHeartRate = event.values[1]; // Sesuaikan indeks jika diperlukan
+                            handler.post(() -> publishDataToMqtt()); // Trigger MQTT publish
+                        }
+                    }
+
+                    @Override
+                    public void onAccuracyChanged(Sensor sensor, int accuracy) {
+                        // Optional: Handle accuracy changes
+                    }
+                };
+
+                sensorManager.registerListener(heartRateListener, heartRateSensor, SensorManager.SENSOR_DELAY_NORMAL);
+            } else {
+                Toast.makeText(this, "Heart Rate Sensor (ID 65599) not available!", Toast.LENGTH_LONG).show();
+            }
         }
     }
 

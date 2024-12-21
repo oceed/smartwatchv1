@@ -30,6 +30,8 @@ import com.google.android.gms.location.LocationRequest;
 import com.google.android.gms.location.LocationResult;
 import com.google.android.gms.location.LocationServices;
 
+import java.util.List;
+
 public class MainActivity extends AppCompatActivity {
 
     private SensorManager sensorManager;
@@ -49,7 +51,7 @@ public class MainActivity extends AppCompatActivity {
         public void onReceive(Context context, Intent intent) {
             String status = intent.getStringExtra("status");
             Log.d("MainActivity", "Received broadcast for status: " + status); // Log ketika status diterima
-            mqttStatusTextView.setText("MQTT Status: " + status);
+            mqttStatusTextView.setText("" + status);
         }
     };
 
@@ -59,7 +61,7 @@ public class MainActivity extends AppCompatActivity {
         setContentView(R.layout.activity_main);
 
         heartRateTextView = findViewById(R.id.heartRateTextView);
-        locationTextView = findViewById(R.id.locationTextView);
+//        locationTextView = findViewById(R.id.locationTextView);
         mqttStatusTextView = findViewById(R.id.mqttStatusTextView); // Add this line
         emergencyButton = findViewById(R.id.emergencyButton);
 
@@ -82,7 +84,7 @@ public class MainActivity extends AppCompatActivity {
         // Check and request permissions
         if (hasRequiredPermissions()) {
             initializeHeartRateSensor();
-            initializeLocationUpdates();
+//            initializeLocationUpdates();
             requestBatteryOptimizationPermission();
         } else {
             requestPermissions();
@@ -122,16 +124,27 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void initializeHeartRateSensor() {
-        sensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
+        SensorManager sensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
+
         if (sensorManager != null) {
-            heartRateSensor = sensorManager.getDefaultSensor(Sensor.TYPE_HEART_RATE);
+            // Loop melalui semua sensor dan cari yang memiliki type 65599
+            List<Sensor> sensorList = sensorManager.getSensorList(Sensor.TYPE_ALL);
+            Sensor heartRateSensor = null;
+
+            for (Sensor sensor : sensorList) {
+                if (sensor.getType() == 65599) { // Gunakan ID sensor 65599
+                    heartRateSensor = sensor;
+                    break;
+                }
+            }
+
             if (heartRateSensor != null) {
                 sensorManager.registerListener(new SensorEventListener() {
                     @Override
                     public void onSensorChanged(SensorEvent event) {
-                        if (event.sensor.getType() == Sensor.TYPE_HEART_RATE) {
-                            float heartRate = event.values[0];
-                            heartRateTextView.setText("Heart Rate: " + heartRate + " BPM");
+                        if (event.sensor.getType() == 65599) {
+                            int heartRate = (int) event.values[1];
+                            heartRateTextView.setText("" + heartRate);
                         }
                     }
 
@@ -141,9 +154,10 @@ public class MainActivity extends AppCompatActivity {
                     }
                 }, heartRateSensor, SensorManager.SENSOR_DELAY_NORMAL);
             } else {
-                Toast.makeText(this, "Heart Rate Sensor not available!", Toast.LENGTH_LONG).show();
+                Toast.makeText(this, "Custom Heart Rate Sensor not available!", Toast.LENGTH_LONG).show();
             }
         }
+
     }
 
     private void initializeLocationUpdates() {
