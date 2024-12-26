@@ -124,26 +124,15 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void initializeHeartRateSensor() {
-        SensorManager sensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
-
+        sensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
         if (sensorManager != null) {
-            // Loop melalui semua sensor dan cari yang memiliki type 65599
-            List<Sensor> sensorList = sensorManager.getSensorList(Sensor.TYPE_ALL);
-            Sensor heartRateSensor = null;
-
-            for (Sensor sensor : sensorList) {
-                if (sensor.getType() == 65599) { // Gunakan ID sensor 65599
-                    heartRateSensor = sensor;
-                    break;
-                }
-            }
-
+            heartRateSensor = sensorManager.getDefaultSensor(Sensor.TYPE_HEART_RATE);
             if (heartRateSensor != null) {
                 sensorManager.registerListener(new SensorEventListener() {
                     @Override
                     public void onSensorChanged(SensorEvent event) {
-                        if (event.sensor.getType() == 65599) {
-                            int heartRate = (int) event.values[1];
+                        if (event.sensor.getType() == Sensor.TYPE_HEART_RATE) {
+                            float heartRate = event.values[0];
                             heartRateTextView.setText("" + heartRate);
                         }
                     }
@@ -154,10 +143,9 @@ public class MainActivity extends AppCompatActivity {
                     }
                 }, heartRateSensor, SensorManager.SENSOR_DELAY_NORMAL);
             } else {
-                Toast.makeText(this, "Custom Heart Rate Sensor not available!", Toast.LENGTH_LONG).show();
+                Toast.makeText(this, "Heart Rate Sensor not available!", Toast.LENGTH_LONG).show();
             }
         }
-
     }
 
     private void initializeLocationUpdates() {

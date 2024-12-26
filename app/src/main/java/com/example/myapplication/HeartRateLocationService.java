@@ -36,33 +36,48 @@ import org.eclipse.paho.client.mqttv3.IMqttDeliveryToken;
 import org.eclipse.paho.client.mqttv3.IMqttToken;
 import org.eclipse.paho.client.mqttv3.MqttCallback;
 import org.eclipse.paho.client.mqttv3.MqttClient;
+import org.eclipse.paho.client.mqttv3.MqttConnectOptions;
 import org.eclipse.paho.client.mqttv3.MqttException;
 import org.eclipse.paho.client.mqttv3.MqttMessage;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.io.FileInputStream;
+import java.io.InputStream;
+import java.security.KeyStore;
+import java.security.cert.Certificate;
+import java.security.cert.CertificateFactory;
+import java.security.cert.X509Certificate;
+import java.text.SimpleDateFormat;
+import java.util.Date;
 import java.util.List;
+import java.util.TimeZone;
+
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLSocketFactory;
+import javax.net.ssl.TrustManagerFactory;
 
 public class HeartRateLocationService extends Service {
+
+    private static final String MQTT_SERVER_URI = "ssl://0a9bf6989c7a448d969de0599ad03ed0.s1.eu.hivemq.cloud:8883";
+    private static final String MQTT_USERNAME = "sundalink";
+    private static final String MQTT_PASSWORD = "@Sundalink123";
+    private static final String MQTT_PUBLISH_TOPIC_BASE = "sundalink/sw";
+    private static final String NOTIFICATION_CHANNEL_ID = "HeartRateServiceChannel";
 
     private SensorManager sensorManager;
     private Sensor heartRateSensor;
     private FusedLocationProviderClient fusedLocationClient;
     private LocationCallback locationCallback;
-    private String deviceId; // Menyimpan deviceId yang dinamis
-    private String mqttPublishTopic;
-    private String mqttSubscribeTopic;
-    private MqttAndroidClient mqttClient;
-    // 206.189.40.4
-    private static final String MQTT_SERVER_URI = "tcp://192.168.1.143:1883"; // Ganti dengan IP server Anda
-//    private static final String MQTT_TOPIC = "health/heart_rate_location";
 
+    private MqttAndroidClient mqttClient;
+    private String deviceId;
     private float currentHeartRate = 0;
     private double currentLatitude = 0.0, currentLongitude = 0.0;
+    private boolean isEmergency = false;
+    private long lastPublishTime = 0;
 
     private final Handler handler = new Handler();
-    private long lastPublishTime = 0;
-    private boolean isEmergency = false;
 
     @Override
     public void onCreate() {
@@ -70,191 +85,139 @@ public class HeartRateLocationService extends Service {
         Log.d("HeartRateService", "Service started");
 
         deviceId = retrieveDeviceId();
-
-        // Tentukan topik MQTT
-        mqttPublishTopic = "sundalink/sw/" + deviceId;
-        mqttSubscribeTopic = "sundalink/msg/" + deviceId;
-
-        // Initialize MQTT Client
         initializeMqttClient();
+        initializeHeartRateSensor();
+        initializeLocationMonitoring();
 
-        // Initialize SensorManager and Heart Rate Sensor
-        sensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
-        if (sensorManager != null) {
-            heartRateSensor = sensorManager.getDefaultSensor(Sensor.TYPE_HEART_RATE);
-        }
-
-        // Initialize FusedLocationProviderClient
-        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this);
-
-        // Start Heart Rate and Location Monitoring
-        startHeartRateMonitoring();
-        startLocationMonitoring();
-
-        // Start Foreground Notification
         createNotificationChannel();
         startForeground(1, getForegroundNotification());
     }
 
     private void initializeMqttClient() {
-        String clientId = MqttClient.generateClientId();
-        mqttClient = new MqttAndroidClient(getApplicationContext(), MQTT_SERVER_URI, clientId);
+        mqttClient = new MqttAndroidClient(getApplicationContext(), MQTT_SERVER_URI, MqttClient.generateClientId());
 
         try {
-            IMqttToken token = mqttClient.connect();
-            token.setActionCallback(new IMqttActionListener() {
+            MqttConnectOptions options = new MqttConnectOptions();
+            options.setUserName(MQTT_USERNAME);
+            options.setPassword(MQTT_PASSWORD.toCharArray());
+            options.setSocketFactory(getSSLSocketFactory());
+
+            mqttClient.connect(options).setActionCallback(new IMqttActionListener() {
                 @Override
                 public void onSuccess(IMqttToken asyncActionToken) {
-                    Log.d("MQTT", "Connected to MQTT broker");
-                    updateMqttStatus("Connected");
-                    // Subscribe to a topic (optional, for testing)
-                    try {
-                        mqttClient.subscribe(mqttSubscribeTopic, 1);
-                        Log.d("MQTT", "Subscribed to topic: " + mqttSubscribeTopic);
-                    } catch (MqttException e) {
-                        Log.e("MQTT", "Failed to subscribe", e);
-                    }
-
-                    // Set callback untuk menerima pesan
-                    mqttClient.setCallback(new MqttCallback() {
-                        @Override
-                        public void connectionLost(Throwable cause) {
-                            Log.e("MQTT", "Connection lost", cause);
-                        }
-
-                        @Override
-                        public void messageArrived(String topic, MqttMessage message) throws Exception {
-                            if (topic.equals(mqttSubscribeTopic)) { // Gunakan equals dengan benar
-                                String receivedMessage = new String(message.getPayload());
-                                Log.d("MQTT", "Message received: " + receivedMessage);
-                                handleIncomingMessage(receivedMessage);
-                            }
-                        }
-
-                        @Override
-                        public void deliveryComplete(IMqttDeliveryToken token) {
-                            Log.d("MQTT", "Delivery complete");
-                        }
-                    });
-
+                    Log.d("MQTT", "Connected to HiveMQ broker");
+                    subscribeToMqttTopic();
                 }
 
                 @Override
                 public void onFailure(IMqttToken asyncActionToken, Throwable exception) {
-                    Log.e("MQTT", "Failed to connect to MQTT broker", exception);
-                    updateMqttStatus("Disconnected");
-                    // Retry connection
+                    Log.e("MQTT", "Failed to connect to HiveMQ broker", exception);
                     retryMqttConnection();
                 }
             });
+
+            mqttClient.setCallback(createMqttCallback());
         } catch (Exception e) {
             Log.e("MQTT", "Error initializing MQTT client", e);
-            updateMqttStatus("Error");
         }
     }
 
     private void retryMqttConnection() {
-        new android.os.Handler().postDelayed(() -> {
+        handler.postDelayed(() -> {
             Log.d("MQTT", "Retrying MQTT connection...");
             initializeMqttClient();
-        }, 5000); // Retry after 5 seconds
+        }, 5000);
     }
 
-    private void updateMqttStatus(String status) {
-        Log.d("MQTT", "Broadcast sent for status: " + status);
-        Intent intent = new Intent("MQTT_STATUS_UPDATE");
-        intent.putExtra("status", status);
-        sendBroadcast(intent);
+    private SSLSocketFactory getSSLSocketFactory() throws Exception {
+        CertificateFactory cf = CertificateFactory.getInstance("X.509");
+
+        // Baca file sertifikat dari res/raw
+        InputStream caInput = getResources().openRawResource(R.raw.isrgrootx1);
+        Certificate ca;
+        try {
+            ca = cf.generateCertificate(caInput);
+            Log.d("SSL", "Certificate loaded: " + ((X509Certificate) ca).getSubjectDN());
+        } finally {
+            caInput.close();
+        }
+
+        // Buat KeyStore dan masukkan sertifikat
+        KeyStore keyStore = KeyStore.getInstance(KeyStore.getDefaultType());
+        keyStore.load(null, null);
+        keyStore.setCertificateEntry("ca", ca);
+
+        // Buat TrustManagerFactory menggunakan KeyStore
+        TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+        tmf.init(keyStore);
+
+        // Buat SSLContext menggunakan TrustManager
+        SSLContext sslContext = SSLContext.getInstance("TLS");
+        sslContext.init(null, tmf.getTrustManagers(), null);
+
+        return sslContext.getSocketFactory();
     }
 
-    private void publishDataToMqtt() {
-        long currentTime = System.currentTimeMillis();
-        if (currentTime - lastPublishTime >= 1000) { // Kirim setiap 1 detik
-            lastPublishTime = currentTime;
-            if (mqttClient != null && mqttClient.isConnected()) {
-                try {
-                    String payload = String.format(
-                            "{\"device\": \"%s\", \"heart_rate\": %.1f, \"latitude\": %.6f, \"longitude\": %.6f, \"emergency\": %d, \"timestamp\": \"%s\"}",
-                            deviceId, // Gunakan ID unik perangkat, contoh: Build.SERIAL
-                            currentHeartRate,
-                            currentLatitude,
-                            currentLongitude,
-                            isEmergency ? 1 : 0,
-                            new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new java.util.Date())
-                    );
-                    MqttMessage message = new MqttMessage(payload.getBytes());
-                    message.setQos(1);
-                    mqttClient.publish(mqttPublishTopic, message);
-                    Log.d("MQTT", "Data published: " + payload);
-                } catch (MqttException e) {
-                    Log.e("MQTT", "Failed to publish data", e);
-                    // saveToLocalStorage(payload); // Simpan lokal jika gagal
-                }
-            } else {
-                Log.w("MQTT", "Cannot publish, MQTT client not connected");
-                saveToLocalStorage("Disconnected: " + Build.SERIAL); // Simpan status jika tidak terkoneksi
+    private void subscribeToMqttTopic() {
+        try {
+            mqttClient.subscribe(MQTT_PUBLISH_TOPIC_BASE, 1);
+            Log.d("MQTT", "Subscribed to topic: " + MQTT_PUBLISH_TOPIC_BASE);
+        } catch (MqttException e) {
+            Log.e("MQTT", "Failed to subscribe", e);
+        }
+    }
+
+    private MqttCallback createMqttCallback() {
+        return new MqttCallback() {
+            @Override
+            public void connectionLost(Throwable cause) {
+                Log.e("MQTT", "Connection lost", cause);
             }
-        }
+
+            @Override
+            public void messageArrived(String topic, MqttMessage message) {
+                Log.d("MQTT", "Message arrived: " + new String(message.getPayload()));
+            }
+
+            @Override
+            public void deliveryComplete(IMqttDeliveryToken token) {
+                Log.d("MQTT", "Delivery complete");
+            }
+        };
     }
 
-    // Fungsi untuk mendapatkan ID perangkat yang unik
-    private String retrieveDeviceId() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            return Settings.Secure.getString(getApplicationContext().getContentResolver(), Settings.Secure.ANDROID_ID);
-        } else {
-            return Build.SERIAL; // Untuk perangkat lama
-        }
-    }
-
-    // Metode menyimpan data lokal
-    private void saveToLocalStorage(String payload) {
-        // Anda bisa menyimpan ke SQLite atau file lokal untuk pengiriman ulang
-        Log.d("LocalStorage", "Saving data locally: " + payload);
-    }
-
-
-    private void startHeartRateMonitoring() {
-        SensorManager sensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
-
+    private void initializeHeartRateSensor() {
+        sensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
         if (sensorManager != null) {
-            // Cari sensor dengan ID 65599
-            List<Sensor> sensorList = sensorManager.getSensorList(Sensor.TYPE_ALL);
-            Sensor heartRateSensor = null;
-
-            for (Sensor sensor : sensorList) {
-                if (sensor.getType() == 65599) { // Gunakan ID sensor 65599
-                    heartRateSensor = sensor;
-                    break;
-                }
-            }
-
+            heartRateSensor = sensorManager.getDefaultSensor(Sensor.TYPE_HEART_RATE);
             if (heartRateSensor != null) {
-                SensorEventListener heartRateListener = new SensorEventListener() {
-                    @Override
-                    public void onSensorChanged(SensorEvent event) {
-                        if (event.sensor.getType() == 65599) {
-                            currentHeartRate = event.values[1]; // Sesuaikan indeks jika diperlukan
-                            handler.post(() -> publishDataToMqtt()); // Trigger MQTT publish
-                        }
-                    }
-
-                    @Override
-                    public void onAccuracyChanged(Sensor sensor, int accuracy) {
-                        // Optional: Handle accuracy changes
-                    }
-                };
-
-                sensorManager.registerListener(heartRateListener, heartRateSensor, SensorManager.SENSOR_DELAY_NORMAL);
-            } else {
-                Toast.makeText(this, "Heart Rate Sensor (ID 65599) not available!", Toast.LENGTH_LONG).show();
+                sensorManager.registerListener(createHeartRateListener(), heartRateSensor, SensorManager.SENSOR_DELAY_NORMAL);
             }
         }
     }
 
-    private void startLocationMonitoring() {
-        LocationRequest locationRequest = LocationRequest.create();
-        locationRequest.setInterval(5000); // Update every 5 seconds
-        locationRequest.setPriority(LocationRequest.PRIORITY_HIGH_ACCURACY);
+    private SensorEventListener createHeartRateListener() {
+        return new SensorEventListener() {
+            @Override
+            public void onSensorChanged(SensorEvent event) {
+                if (event.sensor.getType() == Sensor.TYPE_HEART_RATE) {
+                    currentHeartRate = event.values[0];
+                    publishDataToMqtt();
+                }
+            }
+
+            @Override
+            public void onAccuracyChanged(Sensor sensor, int accuracy) {
+                // No implementation needed
+            }
+        };
+    }
+
+    private void initializeLocationMonitoring() {
+        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this);
+        LocationRequest locationRequest = LocationRequest.create()
+                .setInterval(5000)
+                .setPriority(LocationRequest.PRIORITY_HIGH_ACCURACY);
 
         locationCallback = new LocationCallback() {
             @Override
@@ -263,50 +226,47 @@ public class HeartRateLocationService extends Service {
                 if (location != null) {
                     currentLatitude = location.getLatitude();
                     currentLongitude = location.getLongitude();
-                    handler.post(() -> publishDataToMqtt()); // Trigger MQTT publish
-                } else {
-                    Log.w("Location", "Location is null");
+                    publishDataToMqtt();
                 }
             }
         };
 
         if (checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
             fusedLocationClient.requestLocationUpdates(locationRequest, locationCallback, null);
-        } else {
-            Log.e("Location", "Location permission not granted");
         }
     }
 
-    // Fungsi untuk menangani pesan masuk dari topik safetrip/call/{deviceId}
-    private void handleIncomingMessage(String message) {
-        try {
-            JSONObject jsonObject = new JSONObject(message);
-            String notificationMessage = jsonObject.optString("message", "No message");
-            sendNotification(notificationMessage);
-        } catch (JSONException e) {
-            Log.e("MQTT", "Invalid message format: " + message, e);
+    private void publishDataToMqtt() {
+        long currentTime = System.currentTimeMillis();
+        if (mqttClient != null && mqttClient.isConnected() && currentTime - lastPublishTime >= 1000) {
+            lastPublishTime = currentTime;
+            SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss");
+            sdf.setTimeZone(TimeZone.getDefault()); // Zona waktu perangkat
+            String localTimestamp = sdf.format(new Date());
+            String payload = String.format(
+                    "{\"device\": \"%s\", \"heart_rate\": %.1f, \"latitude\": %.6f, \"longitude\": %.6f, \"emergency\": %b, \"timestamp\": \"%s\"}",
+                    deviceId, currentHeartRate, currentLatitude, currentLongitude, isEmergency, localTimestamp
+            );
+
+            try {
+                mqttClient.publish(MQTT_PUBLISH_TOPIC_BASE, new MqttMessage(payload.getBytes()));
+                Log.d("MQTT", "Data published: " + payload);
+            } catch (MqttException e) {
+                Log.e("MQTT", "Failed to publish data", e);
+            }
         }
     }
 
-    // Fungsi untuk menampilkan notifikasi
-    private void sendNotification(String message) {
-        NotificationCompat.Builder builder = new NotificationCompat.Builder(this, "HeartRateServiceChannel")
-                .setContentTitle("Notification from MQTT")
-                .setContentText(message)
-                .setSmallIcon(R.drawable.ic_launcher_foreground)
-                .setPriority(NotificationCompat.PRIORITY_HIGH)
-                .setAutoCancel(true);
-
-        NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        if (manager != null) {
-            manager.notify(1, builder.build());
-        }
+    private String retrieveDeviceId() {
+        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.O ?
+                Settings.Secure.getString(getContentResolver(), Settings.Secure.ANDROID_ID) :
+                Build.SERIAL;
     }
 
     private Notification getForegroundNotification() {
-        return new NotificationCompat.Builder(this, "HeartRateServiceChannel")
+        return new NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
                 .setContentTitle("Heart Rate and Location Monitoring")
-                .setContentText("Monitoring and sending data to MQTT server.")
+                .setContentText("Monitoring and sending data to HiveMQ server.")
                 .setSmallIcon(R.drawable.ic_launcher_foreground)
                 .build();
     }
@@ -314,9 +274,9 @@ public class HeartRateLocationService extends Service {
     private void createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel channel = new NotificationChannel(
-                    "HeartRateServiceChannel",
+                    NOTIFICATION_CHANNEL_ID,
                     "Heart Rate Service Channel",
-                    NotificationManager.IMPORTANCE_LOW // Ubah ke LOW untuk mengurangi gangguan
+                    NotificationManager.IMPORTANCE_LOW
             );
             NotificationManager manager = getSystemService(NotificationManager.class);
             if (manager != null) {
@@ -326,51 +286,7 @@ public class HeartRateLocationService extends Service {
     }
 
     @Override
-    public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent != null && intent.hasExtra("emergency")) {
-            isEmergency = intent.getBooleanExtra("emergency", false);
-            Log.d("HeartRateService", "Emergency status updated: " + isEmergency);
-        }
-        return START_STICKY;
-    }
-
-    @Override
     public IBinder onBind(Intent intent) {
-        return null; // We don't provide binding
-    }
-
-    @Override
-    public void onTaskRemoved(Intent rootIntent) {
-        super.onTaskRemoved(rootIntent);
-        // Restart service with AlarmManager
-        Intent restartServiceIntent = new Intent(this, HeartRateLocationService.class);
-        PendingIntent pendingIntent = PendingIntent.getService(
-                this,
-                1,
-                restartServiceIntent,
-                PendingIntent.FLAG_IMMUTABLE
-        );
-        AlarmManager alarmManager = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
-        if (alarmManager != null) {
-            alarmManager.setExact(AlarmManager.RTC_WAKEUP, System.currentTimeMillis() + 1000, pendingIntent);
-        }
-    }
-
-    @Override
-    public void onDestroy() {
-        super.onDestroy();
-        if (sensorManager != null && heartRateSensor != null) {
-            sensorManager.unregisterListener((SensorEventListener) this);
-        }
-        if (fusedLocationClient != null) {
-            fusedLocationClient.removeLocationUpdates(locationCallback);
-        }
-        if (mqttClient != null && mqttClient.isConnected()) {
-            try {
-                mqttClient.disconnect();
-            } catch (Exception e) {
-                Log.e("MQTT", "Error disconnecting MQTT client", e);
-            }
-        }
+        return null;
     }
 }
