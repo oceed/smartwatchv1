@@ -244,8 +244,8 @@ public class HeartRateLocationService extends Service {
             sdf.setTimeZone(TimeZone.getDefault()); // Zona waktu perangkat
             String localTimestamp = sdf.format(new Date());
             String payload = String.format(
-                    "{\"device\": \"%s\", \"heart_rate\": %.1f, \"latitude\": %.6f, \"longitude\": %.6f, \"emergency\": %b, \"timestamp\": \"%s\"}",
-                    deviceId, currentHeartRate, currentLatitude, currentLongitude, isEmergency, localTimestamp
+                    "{\"device\": \"%s\", \"heart_rate\": %.1f, \"latitude\": %.6f, \"longitude\": %.6f, \"emergency\": %d, \"timestamp\": \"%s\"}",
+                    deviceId, currentHeartRate, currentLatitude, currentLongitude, isEmergency ? 1 : 0, localTimestamp
             );
 
             try {
@@ -255,6 +255,15 @@ public class HeartRateLocationService extends Service {
                 Log.e("MQTT", "Failed to publish data", e);
             }
         }
+    }
+
+    @Override
+    public int onStartCommand(Intent intent, int flags, int startId) {
+        if (intent != null && intent.hasExtra("emergency")) {
+            isEmergency = intent.getBooleanExtra("emergency", false);
+            Log.d("HeartRateService", "Emergency status updated: " + isEmergency);
+        }
+        return START_STICKY;
     }
 
     private String retrieveDeviceId() {

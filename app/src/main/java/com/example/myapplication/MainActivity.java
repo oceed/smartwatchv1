@@ -174,7 +174,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void startHeartRateLocationService() {
         Intent serviceIntent = new Intent(this, HeartRateLocationService.class);
-        serviceIntent.putExtra("isEmergency", isEmergency);
+        serviceIntent.putExtra("emergency", isEmergency);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(serviceIntent);
         } else {
