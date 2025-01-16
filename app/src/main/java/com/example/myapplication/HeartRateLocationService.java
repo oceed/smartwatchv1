@@ -44,6 +44,8 @@ public class HeartRateLocationService extends Service {
 
     private SensorManager sensorManager;
     private Sensor heartRateSensor;
+    private SensorEventListener heartRateListener;
+    private static final long ACTIVE_INTERVAL_MS = 1000;
     private FusedLocationProviderClient fusedLocationClient;
     private LocationCallback locationCallback;
     private String deviceId; // Menyimpan deviceId yang dinamis
@@ -51,15 +53,19 @@ public class HeartRateLocationService extends Service {
     private String mqttSubscribeTopic;
     private static final String MQTT_CONTROL_TOPIC = "safetrip/active";
     private MqttAndroidClient mqttClient;
-    private static final String MQTT_SERVER_URI = "tcp://192.168.1.143:1883"; // Ganti dengan IP server Anda
+    private static final String MQTT_SERVER_URI = "tcp://192.168.1.170:1883"; // Ganti dengan IP server Anda
 
     private float currentHeartRate = 0;
     private double currentLatitude = 0.0, currentLongitude = 0.0;
 
     private final Handler handler = new Handler();
+    private final Handler idleHandler = new Handler();
+    private boolean isIdleMode = false;
     private long lastPublishTime = 0;
     private boolean isPublishing = true;
     private boolean isEmergency = false;
+
+    private static final long IDLE_INTERVAL_MS = 3600000;
 
     @Override
     public void onCreate() {
@@ -80,11 +86,83 @@ public class HeartRateLocationService extends Service {
 
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this);
 
-        startHeartRateMonitoring();
-        startLocationMonitoring();
+        startMonitoring();
+
+//        startHeartRateMonitoring();
+//        startLocationMonitoring();
 
         createNotificationChannel();
         startForeground(1, getForegroundNotification());
+    }
+
+    private void startMonitoring() {
+        if (isIdleMode) {
+            startIdleMode();
+        } else {
+            startHeartRateMonitoring();
+            startLocationMonitoring();
+        }
+    }
+
+    private void startIdleMode() {
+        if (!isIdleMode) {
+            isIdleMode = true;
+            isPublishing = false; // Nonaktifkan publikasi aktif
+            idleHandler.postDelayed(idleTask, IDLE_INTERVAL_MS);
+            Log.d("anjay", "Started idle mode. Data will be sent every 10 seconds.");
+        }
+    }
+
+    private final Runnable idleTask = new Runnable() {
+        @Override
+        public void run() {
+            if (isIdleMode) {
+                Log.d("anjay", "idle mode jalan");
+                retrieveDataOnce();
+                idleHandler.postDelayed(this, IDLE_INTERVAL_MS);
+            }
+        }
+    };
+
+    private void retrieveDataOnce() {
+        // Ambil heart rate satu kali
+        if (heartRateSensor != null) {
+            SensorEventListener tempListener = new SensorEventListener() {
+                @Override
+                public void onSensorChanged(SensorEvent event) {
+                    if (event.sensor.getType() == Sensor.TYPE_HEART_RATE) {
+                        currentHeartRate = event.values[0];
+                        sensorManager.unregisterListener(this);
+                    }
+                }
+
+                @Override
+                public void onAccuracyChanged(Sensor sensor, int accuracy) {
+                }
+            };
+            sensorManager.registerListener(tempListener, heartRateSensor, SensorManager.SENSOR_DELAY_NORMAL);
+        }
+
+        // Ambil lokasi satu kali
+        if (checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+            fusedLocationClient.getLastLocation().addOnSuccessListener(location -> {
+                if (location != null) {
+                    currentLatitude = location.getLatitude();
+                    currentLongitude = location.getLongitude();
+                }
+                publishDataToMqtt();
+            });
+        }
+        Log.d("anjay", "data kekirim");
+    }
+
+    private void stopIdleMode() {
+        if (isIdleMode) {
+            isIdleMode = false;
+            isPublishing = true; // Aktifkan kembali publikasi aktif
+            idleHandler.removeCallbacks(idleTask);
+            Log.d("anjay", "Exited idle mode.");
+        }
     }
 
     private void initializeMqttClient() {
@@ -145,33 +223,39 @@ public class HeartRateLocationService extends Service {
 
     private void handleControlMessage(String message) {
         if (message.equalsIgnoreCase("stop")) {
-            Log.d("Control", "Received stop command");
-            stopPublishing();
+            Log.e("anjay", "Received stop command");
+            resetMonitoring();
+            isPublishing = false; // Hentikan publikasi aktif
+            startIdleMode();
         } else if (message.equalsIgnoreCase("start")) {
-            Log.d("Control", "Received start command");
+            Log.e("anjay", "Received start command");
+            resetMonitoring();
+            isPublishing = true; // Aktifkan publikasi
             startPublishing();
         }
     }
 
     private void stopPublishing() {
-        isPublishing = false;
         stopHeartRateMonitoring();
         stopLocationMonitoring();
-        Log.d("Control", "Publishing and services stopped");
+        stopIdleMode();
+        Log.e("anjay", "Publishing and services stopped");
     }
 
     private void startPublishing() {
         isPublishing = true;
         startHeartRateMonitoring();
         startLocationMonitoring();
-        Log.d("Control", "Publishing and services started");
+        Log.e("anjay", "Publishing and services started");
     }
 
     private void publishDataToMqtt() {
-        if (!isPublishing) return;
+//        if (!isPublishing) return;
 
         long currentTime = System.currentTimeMillis();
-        if (currentTime - lastPublishTime >= 1000) { // Kirim setiap 1 detik
+        long publishInterval = isIdleMode ? IDLE_INTERVAL_MS : ACTIVE_INTERVAL_MS;
+
+        if (currentTime - lastPublishTime >= publishInterval) {
             lastPublishTime = currentTime;
             if (mqttClient != null && mqttClient.isConnected()) {
                 try {
@@ -199,7 +283,7 @@ public class HeartRateLocationService extends Service {
 
     private void startHeartRateMonitoring() {
         if (heartRateSensor != null && isPublishing) {
-            SensorEventListener heartRateListener = new SensorEventListener() {
+            heartRateListener = new SensorEventListener() {
                 @Override
                 public void onSensorChanged(SensorEvent event) {
                     if (event.sensor.getType() == Sensor.TYPE_HEART_RATE) {
@@ -217,8 +301,9 @@ public class HeartRateLocationService extends Service {
     }
 
     private void stopHeartRateMonitoring() {
-        if (sensorManager != null && heartRateSensor != null) {
-            sensorManager.unregisterListener((SensorEventListener) this);
+        if (sensorManager != null && heartRateListener != null) {
+            sensorManager.unregisterListener(heartRateListener);
+            heartRateListener = null;
         }
     }
 
@@ -251,11 +336,11 @@ public class HeartRateLocationService extends Service {
     }
 
     private void stopLocationMonitoring() {
-        if (fusedLocationClient != null) {
+        if (fusedLocationClient != null && locationCallback != null) {
             fusedLocationClient.removeLocationUpdates(locationCallback);
+            locationCallback = null;
         }
     }
-
 
     // Fungsi untuk mendapatkan ID perangkat yang unik
     private String retrieveDeviceId() {
@@ -264,6 +349,12 @@ public class HeartRateLocationService extends Service {
         } else {
             return Build.SERIAL; // Untuk perangkat lama
         }
+    }
+
+    private void resetMonitoring() {
+        stopHeartRateMonitoring();
+        stopLocationMonitoring();
+        stopIdleMode();
     }
 
     // Metode menyimpan data lokal
