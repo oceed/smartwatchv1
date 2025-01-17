@@ -59,7 +59,7 @@ import javax.net.ssl.TrustManagerFactory;
 
 public class HeartRateLocationService extends Service {
 
-    private static final String MQTT_SERVER_URI = "ssl://0a9bf6989c7a448d969de0599ad03ed0.s1.eu.hivemq.cloud:8883";
+    private static final String MQTT_SERVER_URI = "tcp://93.127.162.185:1883";
     private static final String MQTT_USERNAME = "sundalink";
     private static final String MQTT_PASSWORD = "@Sundalink123";
     private static final String MQTT_PUBLISH_TOPIC_BASE = "sundalink/sw";
@@ -72,7 +72,7 @@ public class HeartRateLocationService extends Service {
 
     private MqttAndroidClient mqttClient;
     private String deviceId;
-    private float currentHeartRate = 0;
+    private int currentHeartRate = 0;
     private double currentLatitude = 0.0, currentLongitude = 0.0;
     private boolean isEmergency = false;
     private long lastPublishTime = 0;
@@ -100,18 +100,17 @@ public class HeartRateLocationService extends Service {
             MqttConnectOptions options = new MqttConnectOptions();
             options.setUserName(MQTT_USERNAME);
             options.setPassword(MQTT_PASSWORD.toCharArray());
-            options.setSocketFactory(getSSLSocketFactory());
 
             mqttClient.connect(options).setActionCallback(new IMqttActionListener() {
                 @Override
                 public void onSuccess(IMqttToken asyncActionToken) {
-                    Log.d("MQTT", "Connected to HiveMQ broker");
+                    Log.d("MQTT", "Connected to MQTT broker");
                     subscribeToMqttTopic();
                 }
 
                 @Override
                 public void onFailure(IMqttToken asyncActionToken, Throwable exception) {
-                    Log.e("MQTT", "Failed to connect to HiveMQ broker", exception);
+                    Log.e("MQTT", "Failed to connect to MQTT broker", exception);
                     retryMqttConnection();
                 }
             });
@@ -127,35 +126,6 @@ public class HeartRateLocationService extends Service {
             Log.d("MQTT", "Retrying MQTT connection...");
             initializeMqttClient();
         }, 5000);
-    }
-
-    private SSLSocketFactory getSSLSocketFactory() throws Exception {
-        CertificateFactory cf = CertificateFactory.getInstance("X.509");
-
-        // Baca file sertifikat dari res/raw
-        InputStream caInput = getResources().openRawResource(R.raw.isrgrootx1);
-        Certificate ca;
-        try {
-            ca = cf.generateCertificate(caInput);
-            Log.d("SSL", "Certificate loaded: " + ((X509Certificate) ca).getSubjectDN());
-        } finally {
-            caInput.close();
-        }
-
-        // Buat KeyStore dan masukkan sertifikat
-        KeyStore keyStore = KeyStore.getInstance(KeyStore.getDefaultType());
-        keyStore.load(null, null);
-        keyStore.setCertificateEntry("ca", ca);
-
-        // Buat TrustManagerFactory menggunakan KeyStore
-        TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
-        tmf.init(keyStore);
-
-        // Buat SSLContext menggunakan TrustManager
-        SSLContext sslContext = SSLContext.getInstance("TLS");
-        sslContext.init(null, tmf.getTrustManagers(), null);
-
-        return sslContext.getSocketFactory();
     }
 
     private void subscribeToMqttTopic() {
@@ -201,7 +171,7 @@ public class HeartRateLocationService extends Service {
             @Override
             public void onSensorChanged(SensorEvent event) {
                 if (event.sensor.getType() == Sensor.TYPE_HEART_RATE) {
-                    currentHeartRate = event.values[0];
+                    currentHeartRate = (int) event.values[0];
                     publishDataToMqtt();
                 }
             }
@@ -244,8 +214,8 @@ public class HeartRateLocationService extends Service {
             sdf.setTimeZone(TimeZone.getDefault()); // Zona waktu perangkat
             String localTimestamp = sdf.format(new Date());
             String payload = String.format(
-                    "{\"device\": \"%s\", \"heart_rate\": %.1f, \"latitude\": %.6f, \"longitude\": %.6f, \"emergency\": %d, \"timestamp\": \"%s\"}",
-                    deviceId, currentHeartRate, currentLatitude, currentLongitude, isEmergency ? 1 : 0, localTimestamp
+                    "{\"device\": \"%s\", \"heart_rate\": %d, \"latitude\": %.6f, \"longitude\": %.6f, \"emergency\": %b, \"timestamp\": \"%s\"}",
+                    deviceId, currentHeartRate, currentLatitude, currentLongitude, isEmergency, localTimestamp
             );
 
             try {
