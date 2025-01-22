@@ -14,6 +14,7 @@ import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
 import android.location.Location;
+import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
@@ -52,8 +53,8 @@ public class HeartRateLocationService extends Service {
     private String mqttPublishTopic;
     private String mqttSubscribeTopic;
     private static final String MQTT_CONTROL_TOPIC = "safetrip/active";
-    private MqttAndroidClient mqttClient;
-    private static final String MQTT_SERVER_URI = "tcp://192.168.1.170:1883"; // Ganti dengan IP server Anda
+    private MqttAndroidClient mqttClient; //206.189.40.4
+    private static final String MQTT_SERVER_URI = "tcp://192.168.1.170:1883";
 
     private float currentHeartRate = 0;
     private double currentLatitude = 0.0, currentLongitude = 0.0;
@@ -97,10 +98,11 @@ public class HeartRateLocationService extends Service {
 
     private void startMonitoring() {
         if (isIdleMode) {
-            startIdleMode();
-        } else {
+//            startIdleMode();
             startHeartRateMonitoring();
             startLocationMonitoring();
+        } else {
+            stopPublishing();
         }
     }
 
@@ -249,6 +251,14 @@ public class HeartRateLocationService extends Service {
         Log.e("anjay", "Publishing and services started");
     }
 
+    private int getBatteryLevel() {
+        BatteryManager batteryManager = (BatteryManager) getSystemService(BATTERY_SERVICE);
+        if (batteryManager != null) {
+            return batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY);
+        }
+        return -1; // Jika tidak bisa membaca level baterai
+    }
+
     private void publishDataToMqtt() {
 //        if (!isPublishing) return;
 
@@ -259,12 +269,14 @@ public class HeartRateLocationService extends Service {
             lastPublishTime = currentTime;
             if (mqttClient != null && mqttClient.isConnected()) {
                 try {
+                    int batteryLevel = getBatteryLevel();
                     String payload = String.format(
-                            "{\"device\": \"%s\", \"heart_rate\": %.1f, \"latitude\": %.6f, \"longitude\": %.6f, \"emergency\": %d, \"timestamp\": \"%s\"}",
+                            "{\"device\": \"%s\", \"heart_rate\": %.1f, \"latitude\": %.6f, \"longitude\": %.6f, \"battery\": %d, \"emergency\": %d, \"timestamp\": \"%s\"}",
                             deviceId,
                             currentHeartRate,
                             currentLatitude,
                             currentLongitude,
+                            batteryLevel,
                             isEmergency ? 1 : 0,
                             new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new java.util.Date())
                     );
