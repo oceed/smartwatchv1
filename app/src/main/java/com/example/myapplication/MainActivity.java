@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.hardware.Sensor;
 import android.hardware.SensorEvent;
@@ -15,11 +16,16 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
+import android.view.LayoutInflater;
+import android.view.View;
 import android.widget.Button;
+import android.widget.CheckBox;
+import android.widget.EditText;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.annotation.NonNull;
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
@@ -36,12 +42,20 @@ public class MainActivity extends AppCompatActivity {
     private Sensor heartRateSensor;
     private TextView heartRateTextView, locationTextView, mqttStatusTextView;
     private Button emergencyButton;
+    private Button configbtn;
 
     private static final int PERMISSION_REQUEST_CODE = 1;
 
     private FusedLocationProviderClient fusedLocationClient;
     private LocationCallback locationCallback;
     private boolean isEmergency = false;
+
+    private static final String PREFS_NAME = "mqtt_config";
+    private static final String PREF_IP = "mqtt_ip";
+    private static final String PREF_PORT = "mqtt_port";
+    private static final String PREF_USERNAME = "mqtt_username";
+    private static final String PREF_PASSWORD = "mqtt_password";
+    private static final String PREF_USE_AUTH = "mqtt_use_auth";
 
     // BroadcastReceiver for MQTT status
     private final BroadcastReceiver mqttStatusReceiver = new BroadcastReceiver() {
@@ -62,6 +76,7 @@ public class MainActivity extends AppCompatActivity {
         locationTextView = findViewById(R.id.locationTextView);
         mqttStatusTextView = findViewById(R.id.mqttStatusTextView); // Add this line
         emergencyButton = findViewById(R.id.emergencyButton);
+        configbtn = findViewById(R.id.configbtn);
 
         emergencyButton.setOnClickListener(v -> {
             isEmergency = !isEmergency; // Toggle emergency state
@@ -73,8 +88,15 @@ public class MainActivity extends AppCompatActivity {
             updateEmergencyStatusInService(); // Notify the service
         });
 
-        // Start the background service
-        startHeartRateLocationService();
+        configbtn.setOnClickListener(v -> {
+            showConfigDialog();
+        });
+
+        if (!isMqttConfigAvailable()) {
+            showConfigDialog(); // Tampilkan dialog konfigurasi
+        } else {
+            startHeartRateLocationService(); // Mulai layanan jika konfigurasi tersedia
+        }
 
         // Register MQTT status receiver
         registerReceiver(mqttStatusReceiver, new IntentFilter("MQTT_STATUS_UPDATE"));
@@ -93,6 +115,46 @@ public class MainActivity extends AppCompatActivity {
                 ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.POST_NOTIFICATIONS}, 1001);
             }
         }
+
+
+    }
+
+    private boolean isMqttConfigAvailable() {
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        return prefs.contains(PREF_IP) && prefs.contains(PREF_PORT);
+    }
+
+    private void showConfigDialog() {
+        // Membuat View untuk dialog input
+        View dialogView = LayoutInflater.from(this).inflate(R.layout.dialog_mqtt_config, null);
+        EditText ipEditText = dialogView.findViewById(R.id.editTextIp);
+        EditText portEditText = dialogView.findViewById(R.id.editTextPort);
+        EditText usernameEditText = dialogView.findViewById(R.id.editTextUsername);
+        EditText passwordEditText = dialogView.findViewById(R.id.editTextPassword);
+        CheckBox authCheckBox = dialogView.findViewById(R.id.checkBoxUseAuth);
+
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        builder.setTitle("MQTT Configuration")
+                .setView(dialogView)
+                .setPositiveButton("Save", (dialog, which) -> {
+                    // Simpan data ke SharedPreferences
+                    SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+                    SharedPreferences.Editor editor = prefs.edit();
+                    editor.putString(PREF_IP, ipEditText.getText().toString().trim());
+                    editor.putString(PREF_PORT, portEditText.getText().toString().trim());
+                    editor.putString(PREF_USERNAME, usernameEditText.getText().toString().trim());
+                    editor.putString(PREF_PASSWORD, passwordEditText.getText().toString().trim());
+                    editor.putBoolean(PREF_USE_AUTH, authCheckBox.isChecked());
+                    editor.apply();
+
+                    startHeartRateLocationService(); // Mulai ulang layanan dengan konfigurasi baru
+                })
+                .setNegativeButton("Cancel", (dialog, which) -> {
+                    // Tutup aplikasi jika konfigurasi dibatalkan
+                    finish();
+                })
+                .setCancelable(false)
+                .show();
     }
 
     private boolean hasRequiredPermissions() {

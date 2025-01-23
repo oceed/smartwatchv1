@@ -8,6 +8,7 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.hardware.Sensor;
 import android.hardware.SensorEvent;
@@ -18,7 +19,9 @@ import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
+import android.preference.PreferenceManager;
 import android.provider.Settings;
+import android.text.TextUtils;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
@@ -36,6 +39,7 @@ import org.eclipse.paho.client.mqttv3.IMqttDeliveryToken;
 import org.eclipse.paho.client.mqttv3.IMqttToken;
 import org.eclipse.paho.client.mqttv3.MqttCallback;
 import org.eclipse.paho.client.mqttv3.MqttClient;
+import org.eclipse.paho.client.mqttv3.MqttConnectOptions;
 import org.eclipse.paho.client.mqttv3.MqttException;
 import org.eclipse.paho.client.mqttv3.MqttMessage;
 import org.json.JSONException;
@@ -66,6 +70,15 @@ public class HeartRateLocationService extends Service {
     private boolean isPublishing = true;
     private boolean isEmergency = false;
 
+    private static final String SHARED_PREFS_NAME = "mqtt_config";
+    private static final String PREF_KEY_MQTT_IP = "mqtt_ip";
+    private static final String PREF_KEY_MQTT_PORT = "mqtt_port";
+    private static final String PREF_KEY_MQTT_USERNAME = "mqtt_username";
+    private static final String PREF_KEY_MQTT_PASSWORD = "mqtt_password";
+
+    private SharedPreferences sharedPreferences;
+    private SharedPreferences.OnSharedPreferenceChangeListener prefsChangeListener;
+
     private static final long IDLE_INTERVAL_MS = 3600000;
 
     @Override
@@ -78,7 +91,18 @@ public class HeartRateLocationService extends Service {
         mqttPublishTopic = "safetrip/sw/" + deviceId;
         mqttSubscribeTopic = "safetrip/call/" + deviceId;
 
-        initializeMqttClient();
+        sharedPreferences = getSharedPreferences(SHARED_PREFS_NAME, MODE_PRIVATE);
+        initializeMqttClientFromPreferences();
+
+        // Set listener for preference changes
+        prefsChangeListener = (prefs, key) -> {
+            if (key.equals(PREF_KEY_MQTT_IP) || key.equals(PREF_KEY_MQTT_PORT) ||
+                    key.equals(PREF_KEY_MQTT_USERNAME) || key.equals(PREF_KEY_MQTT_PASSWORD)) {
+                Log.d("MQTT", "SharedPreferences changed: " + key);
+                initializeMqttClientFromPreferences();
+            }
+        };
+        sharedPreferences.registerOnSharedPreferenceChangeListener(prefsChangeListener);
 
         sensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
         if (sensorManager != null) {
@@ -167,35 +191,64 @@ public class HeartRateLocationService extends Service {
         }
     }
 
-    private void initializeMqttClient() {
+    private synchronized void initializeMqttClientFromPreferences() {
+        // Tutup koneksi MQTT yang ada sebelum inisialisasi ulang
+        if (mqttClient != null && mqttClient.isConnected()) {
+            try {
+                mqttClient.disconnect();
+                Log.d("MQTT", "Disconnected previous MQTT client");
+            } catch (Exception e) {
+                Log.e("MQTT", "Error disconnecting MQTT client", e);
+            }
+        }
+
+        // Ambil konfigurasi dari SharedPreferences
+        String serverIp = sharedPreferences.getString(PREF_KEY_MQTT_IP, "192.168.1.170");
+        String serverPort = sharedPreferences.getString(PREF_KEY_MQTT_PORT, "1883");
+        String username = sharedPreferences.getString(PREF_KEY_MQTT_USERNAME, null);
+        String password = sharedPreferences.getString(PREF_KEY_MQTT_PASSWORD, null);
+
+        String serverUri = "tcp://" + serverIp + ":" + serverPort;
         String clientId = MqttClient.generateClientId();
-        mqttClient = new MqttAndroidClient(getApplicationContext(), MQTT_SERVER_URI, clientId);
+
+        mqttClient = new MqttAndroidClient(getApplicationContext(), serverUri, clientId);
+
+        MqttConnectOptions connectOptions = new MqttConnectOptions();
+        connectOptions.setCleanSession(true);
+
+        if (!TextUtils.isEmpty(username) && !TextUtils.isEmpty(password)) {
+            connectOptions.setUserName(username);
+            connectOptions.setPassword(password.toCharArray());
+        }
 
         try {
-            IMqttToken token = mqttClient.connect();
-            token.setActionCallback(new IMqttActionListener() {
+            mqttClient.connect(connectOptions).setActionCallback(new IMqttActionListener() {
                 @Override
                 public void onSuccess(IMqttToken asyncActionToken) {
-                    Log.d("MQTT", "Connected to MQTT broker");
+                    Log.d("MQTT", "Connected to MQTT broker: " + serverUri);
                     updateMqttStatus("Connected");
 
                     try {
                         mqttClient.subscribe(mqttSubscribeTopic, 1);
-                        mqttClient.subscribe(MQTT_CONTROL_TOPIC, 1); // Subscribe to control topic
+                        mqttClient.subscribe(MQTT_CONTROL_TOPIC, 1);
                         Log.d("MQTT", "Subscribed to topics: " + mqttSubscribeTopic + ", " + MQTT_CONTROL_TOPIC);
                     } catch (MqttException e) {
-                        Log.e("MQTT", "Failed to subscribe", e);
+                        Log.e("MQTT", "Failed to subscribe to topics", e);
                     }
 
                     mqttClient.setCallback(new MqttCallback() {
                         @Override
                         public void connectionLost(Throwable cause) {
                             Log.e("MQTT", "Connection lost", cause);
+                            updateMqttStatus("Disconnected");
+                            retryMqttConnection();
                         }
 
                         @Override
-                        public void messageArrived(String topic, MqttMessage message) throws Exception {
+                        public void messageArrived(String topic, MqttMessage message) {
                             String receivedMessage = new String(message.getPayload());
+                            Log.d("MQTT", "Message arrived. Topic: " + topic + ", Message: " + receivedMessage);
+
                             if (topic.equals(mqttSubscribeTopic)) {
                                 handleIncomingMessage(receivedMessage);
                             } else if (topic.equals(MQTT_CONTROL_TOPIC)) {
@@ -205,7 +258,7 @@ public class HeartRateLocationService extends Service {
 
                         @Override
                         public void deliveryComplete(IMqttDeliveryToken token) {
-                            Log.d("MQTT", "Delivery complete");
+                            Log.d("MQTT", "Message delivery complete");
                         }
                     });
                 }
@@ -259,7 +312,7 @@ public class HeartRateLocationService extends Service {
         return -1; // Jika tidak bisa membaca level baterai
     }
 
-    private void publishDataToMqtt() {
+    private synchronized void publishDataToMqtt() {
 //        if (!isPublishing) return;
 
         long currentTime = System.currentTimeMillis();
@@ -378,7 +431,7 @@ public class HeartRateLocationService extends Service {
     private void retryMqttConnection() {
         new android.os.Handler().postDelayed(() -> {
             Log.d("MQTT", "Retrying MQTT connection...");
-            initializeMqttClient();
+            initializeMqttClientFromPreferences();
         }, 5000); // Retry after 5 seconds
     }
 

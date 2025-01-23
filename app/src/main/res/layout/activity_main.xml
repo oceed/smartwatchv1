@@ -20,7 +20,7 @@
         android:layout_height="wrap_content"
         android:layout_below="@+id/locationTextView"
         android:layout_centerHorizontal="true"
-        android:layout_marginTop="30dp"
+        android:layout_marginTop="20dp"
         android:text="MQTT Status: Not Connected"
         android:textColor="@android:color/black"
         android:textSize="20sp"
@@ -34,7 +34,7 @@
         android:text="Location: \nLat: --\nLng: --"
         android:textSize="20sp"
         android:layout_centerHorizontal="true"
-        android:layout_marginTop="30dp"
+        android:layout_marginTop="20dp"
         android:textColor="@android:color/black" />
 
     <Button
@@ -43,9 +43,22 @@
         android:layout_height="wrap_content"
         android:layout_below="@id/mqttStatusTextView"
         android:layout_centerHorizontal="true"
-        android:layout_marginTop="30dp"
+        android:layout_marginTop="20dp"
         android:padding="10dp"
         android:text="Emergency"
+        android:textSize="20sp"
+        android:backgroundTint="@android:color/holo_orange_dark"
+        android:textColor="@android:color/white" />
+
+    <Button
+        android:id="@+id/configbtn"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_below="@id/emergencyButton"
+        android:layout_centerHorizontal="true"
+        android:layout_marginTop="10dp"
+        android:padding="10dp"
+        android:text="config"
         android:textSize="20sp"
         android:backgroundTint="@android:color/holo_orange_dark"
         android:textColor="@android:color/white" />
