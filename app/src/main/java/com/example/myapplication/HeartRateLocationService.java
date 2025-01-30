@@ -8,12 +8,14 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.hardware.Sensor;
 import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
 import android.location.Location;
+import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
@@ -210,12 +212,18 @@ public class HeartRateLocationService extends Service {
         long currentTime = System.currentTimeMillis();
         if (mqttClient != null && mqttClient.isConnected() && currentTime - lastPublishTime >= 1000) {
             lastPublishTime = currentTime;
+
+            // Dapatkan level baterai perangkat
+            int batteryLevel = getBatteryLevel();
+
             SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss");
             sdf.setTimeZone(TimeZone.getDefault()); // Zona waktu perangkat
             String localTimestamp = sdf.format(new Date());
+
+            // Tambahkan level baterai ke dalam payload
             String payload = String.format(
-                    "{\"device\": \"%s\", \"heart_rate\": %d, \"latitude\": %.6f, \"longitude\": %.6f, \"emergency\": %b, \"timestamp\": \"%s\"}",
-                    deviceId, currentHeartRate, currentLatitude, currentLongitude, isEmergency, localTimestamp
+                    "{\"device\": \"%s\", \"heart_rate\": %d, \"latitude\": %.6f, \"longitude\": %.6f, \"emergency\": %b, \"battery\": %d, \"timestamp\": \"%s\"}",
+                    deviceId, currentHeartRate, currentLatitude, currentLongitude, isEmergency, batteryLevel, localTimestamp
             );
 
             try {
@@ -224,6 +232,19 @@ public class HeartRateLocationService extends Service {
             } catch (MqttException e) {
                 Log.e("MQTT", "Failed to publish data", e);
             }
+        }
+    }
+
+    private int getBatteryLevel() {
+        IntentFilter ifilter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
+        Intent batteryStatus = getApplicationContext().registerReceiver(null, ifilter);
+
+        if (batteryStatus != null) {
+            int level = batteryStatus.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+            int scale = batteryStatus.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
+            return (int) ((level / (float) scale) * 100); // Hitung persentase level baterai
+        } else {
+            return -1; // Indikasi error
         }
     }
 
